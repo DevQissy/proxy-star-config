@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import argparse
 import asyncio
 import glob
@@ -7,16 +9,16 @@ import re
 import ssl
 import sys
 import time
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib import request as urlreq
-from urllib.error import HTTPError
-from urllib.parse import parse_qs, urlparse
 
 SOURCES_FILE = Path("sources.txt")
 BLOCKLIST_URLS_FILE = Path("blocklist_urls.txt")
 DEAD_HASHES_FILE = Path("dead_hashes.txt")
+CHANNEL_FILE = Path("channel.txt")
 
 CLEAN_CANDIDATES = Path("clean_candidates.json")
 POST_FILE = Path("post_ready.txt")
@@ -32,16 +34,20 @@ LINK_RE = re.compile(r"(?:tg://proxy|https?://t\.me/proxy)\?[^\s\"'<>]+", re.I)
 SECRET_LIKE = re.compile(r"^[0-9a-zA-Z_\-]{16,}$")
 DEAD, TCP_OK, TLS_OK = "dead", "tcp", "tls"
 
+
 def fetch(url: str, timeout: int = 15) -> str:
-    req = urlreq.Request(url, headers={"User-Agent": UA})
-    with urlreq.urlopen(req, timeout=timeout) as r:
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", errors="replace")
+
 
 def make_key(server: str, port: int, secret: str) -> str:
     return f"{server.lower()}:{port}:{secret.strip().lower()}"
 
+
 def build_tg_proxy(server: str, port: int, secret: str) -> str:
     return f"tg://proxy?server={server}&port={port}&secret={secret}"
+
 
 def load_sources() -> list:
     if SOURCES_FILE.exists():
@@ -53,8 +59,21 @@ def load_sources() -> list:
             urls.append(line.split("?", 1)[0])
         if urls:
             return urls
-    print("[WARN] sources.txt is empty or missing")
+    print("[WARN] sources.txt missing or empty")
     return []
+
+
+def load_channel() -> dict:
+    cfg = {}
+    if CHANNEL_FILE.exists():
+        for line in CHANNEL_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            cfg[k.strip()] = v.strip()
+    return cfg
+
 
 def parse_links(text: str, source: str) -> list:
     out = []
@@ -70,6 +89,7 @@ def parse_links(text: str, source: str) -> list:
             out.append({"server": server, "port": port, "secret": secret, "source": source})
     return out
 
+
 def parse_plain(text: str, source: str) -> list:
     out = []
     for line in text.splitlines():
@@ -83,6 +103,7 @@ def parse_plain(text: str, source: str) -> list:
         if 1 <= port <= 65535 and "." in server and SECRET_LIKE.match(secret):
             out.append({"server": server, "port": port, "secret": secret, "source": source})
     return out
+
 
 def parse_json(text: str, source: str) -> list:
     t = text.strip()
@@ -112,6 +133,7 @@ def parse_json(text: str, source: str) -> list:
     except (json.JSONDecodeError, AttributeError):
         return []
 
+
 def parse_any(text: str, source: str) -> list:
     seen, merged = set(), []
     for p in parse_links(text, source) + parse_plain(text, source) + parse_json(text, source):
@@ -121,9 +143,10 @@ def parse_any(text: str, source: str) -> list:
             merged.append(p)
     return merged
 
+
 def collect() -> list:
     urls = load_sources()
-    print(f"Sources: {len(urls)}")
+    print(f"sources: {len(urls)}")
 
     def safe(u):
         try:
@@ -139,9 +162,9 @@ def collect() -> list:
                 continue
             got = parse_any(text, u)
             if got:
-                print(f"  + {u.split('//')[1][:50]} -> {len(got)}")
+                print(f"  ok {u.split('//')[1][:50]} -> {len(got)}")
             else:
-                print(f"  ! {u.split('//')[1][:50]} -> 0 (preview: {' '.join(text[:100].split())})")
+                print(f"  !! {u.split('//')[1][:50]} -> 0")
             found += got
 
     seen, uniq = set(), []
@@ -150,7 +173,7 @@ def collect() -> list:
         if pid not in seen:
             seen.add(pid)
             uniq.append(p)
-    print(f"Total unique after dedup: {len(uniq)}\n")
+    print(f"unique after dedup: {len(uniq)}\n")
     return uniq
 
 
@@ -162,6 +185,7 @@ def load_dead_hashes() -> set:
         for line in DEAD_HASHES_FILE.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.strip().startswith("#")
     }
+
 
 def load_ip_blocklists() -> set:
     import ipaddress
@@ -184,10 +208,11 @@ def load_ip_blocklists() -> set:
                         count += 1
                     except ValueError:
                         pass
-            print(f"  + blocklist {url.split('//')[1][:45]} -> +{count} ranges")
+            print(f"  ok blocklist {url.split('//')[1][:45]} -> +{count} nets")
         except Exception as e:
             print(f"  x blocklist {url.split('//')[1][:45]} -> {e}")
     return nets
+
 
 def ip_blocked(server: str, nets: set) -> bool:
     import ipaddress
@@ -215,17 +240,22 @@ def extract_sni(secret: str):
         return d
     return None
 
-def probe(proxy: dict, timeout: float, sem) -> dict:
-    import ipaddress
-    host, port, secret = proxy["server"], proxy["port"], proxy["secret"]
-    async def _probe():
+
+async def test_all(proxies: list, timeout: float, concurrency: int) -> dict:
+    sem = asyncio.Semaphore(concurrency)
+    done, total = 0, len(proxies)
+
+    async def one(p):
+        nonlocal done
         async with sem:
+            host, port, secret = p["server"], p["port"], p["secret"]
             t0 = time.perf_counter()
             try:
                 reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(host, port), timeout)
             except Exception:
-                return {"alive": False, "tier": DEAD, "latency_ms": None}
+                done += 1
+                return make_key(host, port, secret), {"alive": False, "tier": DEAD, "latency_ms": None}
             latency = round((time.perf_counter() - t0) * 1000)
             tier = TCP_OK
             sni = extract_sni(secret)
@@ -246,27 +276,15 @@ def probe(proxy: dict, timeout: float, sem) -> dict:
                 await writer.wait_closed()
             except Exception:
                 pass
-            return {"alive": True, "tier": tier, "latency_ms": latency}
-    return ipaddress, _probe
-
-async def test_all(proxies: list, timeout: float, concurrency: int) -> dict:
-    import ipaddress
-    sem = asyncio.Semaphore(concurrency)
-    done, total = 0, len(proxies)
-
-    async def one(p):
-        nonlocal done
-        ipaddress, _probe = probe(p, timeout, sem)
-        res = await _probe()
-        done += 1
-        if done % 100 == 0 or done == total:
-            print(f"  test: {done}/{total}")
-        return make_key(p["server"], p["port"], p["secret"]), res
+            done += 1
+            if done % 100 == 0 or done == total:
+                print(f"  tested: {done}/{total}")
+            return make_key(host, port, secret), {"alive": True, "tier": tier, "latency_ms": latency}
 
     return dict(await asyncio.gather(*(one(p) for p in proxies)))
 
+
 def cmd_collect_clean(_):
-    """Collect + blocklist filter + global TCP -> clean_candidates.json"""
     proxies = collect()
 
     dead_hashes = load_dead_hashes()
@@ -281,12 +299,12 @@ def cmd_collect_clean(_):
     if nets:
         before = len(proxies)
         proxies = [p for p in proxies if not ip_blocked(p["server"], nets)]
-        print(f"  blocklist (IP): {before} -> {len(proxies)}")
+        print(f"  blocklist (ip): {before} -> {len(proxies)}")
 
     if not proxies:
-        sys.exit("Nothing left after filters - check sources/blocklist")
+        sys.exit("empty after filters")
 
-    print(f"Global TCP-check for {len(proxies)} proxies...")
+    print(f"global tcp-check for {len(proxies)} proxies...")
     results = asyncio.run(test_all(proxies, TCP_TIMEOUT, TEST_CONCURRENCY))
 
     alive = [dict(p, **results[make_key(p["server"], p["port"], p["secret"])])
@@ -295,31 +313,34 @@ def cmd_collect_clean(_):
 
     CLEAN_CANDIDATES.write_text(
         json.dumps(alive, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"OK live global candidates: {len(alive)} -> {CLEAN_CANDIDATES}")
+    print(f"ok candidates: {len(alive)} -> {CLEAN_CANDIDATES}")
+
 
 def cmd_make_post(_):
     if not CLEAN_CANDIDATES.exists():
         sys.exit("clean_candidates.json missing - run collect-clean first")
     alive = json.loads(CLEAN_CANDIDATES.read_text(encoding="utf-8"))
+    scanned = len(alive)
 
-    fast = sum(1 for r in alive if (r.get("latency_ms") or 9999) < 400)
-    good = sum(1 for r in alive if 400 <= (r.get("latency_ms") or 9999) < 700)
+    cfg = load_channel()
+    apk_url = cfg.get("apk_post_url", "")
 
-    text = "\n".join([
-        "ProxyStar - Daily Report",
+    body = [
+        "✦ *گزارش روزانهٔ ProxyStar*",
         "",
-        f"Scanned today: 2,500+ proxies from 27 sources",
-        f"Verified live: {len(alive)}",
+        f"*در حال حاضر {scanned:,} سرور بررسی شد و مجموع {scanned:,} سرور برتر برای شما در دسترس گرفت.*",
         "",
-        f"Fast  (<400ms): {fast}",
-        f"Good  (<700ms): {good}",
+        "*~ پروکسی‌های اختصاصی، متناسب با اپراتور و اینترنت منطقه‌ای شما :*",
+        f"[همراه اول | ایرانسل | وایفای | اختصاصی]({apk_url})",
+        f"[همراه اول | ایرانسل | وایفای | اختصاصی]({apk_url})",
         "",
-        "Ranked list, re-checked live on YOUR network:",
-        "ProxyStar app",
-    ])
+        "@Proxystar_Channel",
+    ]
+    text = "\n".join(body)
     POST_FILE.write_text(text, encoding="utf-8")
     print(text)
     print(f"\n---- saved: {POST_FILE} ----")
+
 
 def cmd_send_post(_):
     if not POST_FILE.exists():
@@ -329,29 +350,48 @@ def cmd_send_post(_):
     if not token or not channel:
         sys.exit("TG_BOT_TOKEN / TG_CHANNEL_ID not set")
 
-    import urllib.request as ureq
-    import urllib.parse as uparse
-    data = uparse.urlencode({
-        "chat_id": channel,
-        "text": POST_FILE.read_text(encoding="utf-8"),
-        "disable_web_page_preview": "true",
-    }).encode()
-    req = ureq.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data)
-    with ureq.urlopen(req, timeout=30) as r:
+    cfg = load_channel()
+    banner_url = cfg.get("banner_url", "")
+    text = POST_FILE.read_text(encoding="utf-8")
+
+    if banner_url:
+        data = urllib.parse.urlencode({
+            "chat_id": channel,
+            "photo": banner_url,
+            "caption": text,
+            "parse_mode": "Markdown",
+        }).encode()
+        api = f"https://api.telegram.org/bot{token}/sendPhoto"
+    else:
+        data = urllib.parse.urlencode({
+            "chat_id": channel,
+            "text": text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": "true",
+        }).encode()
+        api = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    req = urllib.request.Request(api, data=data)
+    with urllib.request.urlopen(req, timeout=30) as r:
         resp = json.loads(r.read().decode())
-        print("Posted successfully" if resp.get("ok") else f"Failed: {resp}")
+        if resp.get("ok"):
+            print("posted")
+        else:
+            print(f"error: {resp}")
+            sys.exit(1)
+
 
 def cmd_run(args):
     proxies = collect()
     if not proxies:
-        sys.exit("No proxies parsed")
-    print(f"Testing on operator '{args.operator}'...")
+        sys.exit("no proxies parsed")
+    print(f"testing on network '{args.operator}'...")
     results = asyncio.run(test_all(proxies, args.timeout, args.concurrency))
 
     tier_count = defaultdict(int)
     for r in results.values():
         tier_count[r["tier"]] += 1
-    print(f"Result: {dict(tier_count)}")
+    print(f"tiers: {dict(tier_count)}")
 
     Path(f"results_{args.operator}.json").write_text(
         json.dumps({
@@ -359,7 +399,8 @@ def cmd_run(args):
             "proxies": proxies,
             "results": results,
         }, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"Saved: results_{args.operator}.json")
+    print(f"saved: results_{args.operator}.json")
+
 
 def cmd_merge(_):
     files = sorted(glob.glob("results_*.json"))
@@ -370,7 +411,7 @@ def cmd_merge(_):
         d = json.loads(Path(f).read_text(encoding="utf-8"))
         for p in d["proxies"]:
             pid = make_key(p["server"], p["port"], p["secret"])
-            r = d["results"].get(pid, {"alive": False, "tier": DEAD, "latency_ms": None})
+            r = d["results"].get(pid, {"alive": False})
             e = merged.setdefault(pid, {**p, "alive_count": 0})
             if r["alive"]:
                 e["alive_count"] += 1
@@ -379,7 +420,8 @@ def cmd_merge(_):
     Path("proxies_alive.txt").write_text(
         "\n".join(build_tg_proxy(e["server"], e["port"], e["secret"]) for e in kept),
         encoding="utf-8")
-    print(f"Alive on at least one operator: {len(kept)} of {len(merged)} -> proxies_alive.txt")
+    print(f"alive in at least one network: {len(kept)} of {len(merged)} -> proxies_alive.txt")
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -404,6 +446,7 @@ def main():
         cmd_merge(args)
     elif args.cmd == "run":
         cmd_run(args)
+
 
 if __name__ == "__main__":
     main()
