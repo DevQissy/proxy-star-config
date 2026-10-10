@@ -3,4 +3,4 @@ promo_text_en=Proxy Update News and Announcements
 promo_text_fa=اخبار و اطلاعیه‌های به‌روزرسانی پروکسی ها
 show_promo=true
 apk_post_url=https://t.me/proxystar_app/2
-banner_url=https://raw.githubusercontent.com/devqissy/proxy-star-config/main/banner.png
+banner_url=https://raw.githubusercontent.com/devqissy/proxy-star-config/main/Banner.png
