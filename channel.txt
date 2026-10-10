@@ -1,0 +1,5 @@
+# ProxyStar channel config
+username=proxystar_channel
+promo_text_en=Top services on our Telegram channel
+promo_text_fa=سرویس های برتر در کانال تلگرام ما
+show_promo=true
