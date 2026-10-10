@@ -15,6 +15,7 @@ import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 SOURCES_FILE = Path("sources.txt")
 BLOCKLIST_URLS_FILE = Path("blocklist_urls.txt")
