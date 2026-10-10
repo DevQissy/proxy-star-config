@@ -1,0 +1,45 @@
+name: Daily scan & post
+
+on:
+  schedule:
+    - cron: "30 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps (if needed)
+        run: |
+          python -m pip install --upgrade pip
+          # proxy_hunter only uses stdlib — nothing to install here
+          echo "no deps needed"
+
+      - name: Collect & clean
+        run: python proxy_hunter.py collect-clean
+
+      - name: Make post
+        run: python proxy_hunter.py make-post
+
+      - name: Post to channel
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHANNEL_ID: ${{ secrets.TG_CHANNEL_ID }}
+        run: python proxy_hunter.py send-post
+
+      - name: Commit artifacts
+        run: |
+          git config user.name "proxy-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add clean_candidates.json post_ready.txt
+          git diff --cached --quiet || git commit -m "daily scan: $(date +%F)"
+          git push
