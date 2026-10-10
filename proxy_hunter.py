@@ -395,7 +395,14 @@ def cmd_send_post(_):
 
     cfg = load_channel()
     banner_url = cfg.get("banner_url", "").strip()
-    text = POST_FILE.read_text(encoding="utf-8")
+    md = POST_FILE.read_text(encoding="utf-8")
+
+    html = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", md)
+    html = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2"><b>\1</b></a>', html)
+    html = re.sub(
+        r"(<b>~ پروکسی‌های اختصاصی[^<]*</b>)",
+        r"<blockquote>\1</blockquote>",
+        html)
 
     photo_bytes = None
     if banner_url:
@@ -403,25 +410,29 @@ def cmd_send_post(_):
             photo_bytes = fetch_bytes(banner_url)
             print(f"banner downloaded: {len(photo_bytes)} bytes")
         except Exception as e:
-            print(f"[WARN] banner download failed, sending text-only: {e}")
+            print(f"[WARN] banner download failed: {e}")
 
+    attempts = []
     if photo_bytes:
-        resp = tg_api_call(token, "sendPhoto",
-                           {"chat_id": channel, "caption": text, "parse_mode": "Markdown"},
-                           photo_bytes=photo_bytes)
-        if resp.get("ok"):
-            print("posted (with banner)")
-            return
-        print(f"[WARN] sendPhoto failed: {resp} - falling back to text")
+        attempts.append(("sendPhoto",
+                         {"chat_id": channel, "caption": html, "parse_mode": "HTML"},
+                         photo_bytes))
+    attempts.append(("sendMessage",
+                     {"chat_id": channel, "text": html,
+                      "parse_mode": "HTML", "disable_web_page_preview": "true"},
+                     None))
 
-    resp = tg_api_call(token, "sendMessage",
-                       {"chat_id": channel, "text": text,
-                        "parse_mode": "Markdown", "disable_web_page_preview": "true"})
-    if resp.get("ok"):
-        print("posted (text-only)")
-    else:
-        print(f"TELEGRAM ERROR: {resp}")
-        sys.exit(1)
+    last = None
+    for method, fields, pb in attempts:
+        resp = tg_api_call(token, method, fields, photo_bytes=pb)
+        if resp.get("ok"):
+            print(f"posted via {method}")
+            return
+        last = resp
+        print(f"[WARN] {method} failed: {resp}")
+
+    print(f"TELEGRAM ERROR (final): {last}")
+    sys.exit(1)
 
 
 def cmd_run(args):
