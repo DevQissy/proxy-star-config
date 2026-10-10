@@ -1,0 +1,10 @@
+ProxyStar - Daily Report
+
+Scanned today: 2,500+ proxies from 27 sources
+Verified live: 1097
+
+Fast  (<400ms): 240
+Good  (<700ms): 171
+
+Ranked list, re-checked live on YOUR network:
+ProxyStar app
