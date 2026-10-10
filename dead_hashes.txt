@@ -1,0 +1,1 @@
+# ProxyStar dead-hash list — populated by apply_feedback.py
