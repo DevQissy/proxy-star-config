@@ -1,10 +1,9 @@
-ProxyStar - Daily Report
+✦ **گزارش روزانهٔ ProxyStar**
 
-Scanned today: 2,500+ proxies from 27 sources
-Verified live: 1097
+**در حال حاضر 2,440 سرور بررسی شد و مجموع 1,062 سرور برتر برای شما در دسترس گرفت.**
 
-Fast  (<400ms): 240
-Good  (<700ms): 171
+**~ پروکسی‌های اختصاصی، متناسب با اپراتور و اینترنت منطقه‌ای شما :**
+[**همراه اول | ایرانسل | وایفای | اختصاصی**](https://t.me/proxystar_app/2)
+[**همراه اول | ایرانسل | وایفای | اختصاصی**](https://t.me/proxystar_app/2)
 
-Ranked list, re-checked live on YOUR network:
-ProxyStar app
+@Proxystar_Channel
