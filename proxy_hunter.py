@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -39,6 +40,12 @@ def fetch(url: str, timeout: int = 15) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", errors="replace")
+
+
+def fetch_bytes(url: str, timeout: int = 20) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
 
 
 def make_key(server: str, port: int, secret: str) -> str:
@@ -312,27 +319,41 @@ def cmd_collect_clean(_):
              if results[make_key(p["server"], p["port"], p["secret"])]["alive"]]
 
     CLEAN_CANDIDATES.write_text(
-        json.dumps(alive, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"ok candidates: {len(alive)} -> {CLEAN_CANDIDATES}")
+        json.dumps({"checked": len(proxies), "alive": alive},
+                   ensure_ascii=False, indent=1),
+        encoding="utf-8")
+    print(f"ok: checked={len(proxies)} alive={len(alive)} -> {CLEAN_CANDIDATES}")
 
 
 def cmd_make_post(_):
     if not CLEAN_CANDIDATES.exists():
         sys.exit("clean_candidates.json missing - run collect-clean first")
-    alive = json.loads(CLEAN_CANDIDATES.read_text(encoding="utf-8"))
-    scanned = len(alive)
+    data = json.loads(CLEAN_CANDIDATES.read_text(encoding="utf-8"))
+    checked = data.get("checked", 0)
+    alive = data.get("alive", [])
+    scanned = checked if checked > 0 else len(alive)
 
     cfg = load_channel()
-    apk_url = cfg.get("apk_post_url", "")
+    apk_url = cfg.get("apk_post_url", "").strip()
+
+    if apk_url:
+        operator_lines = (
+            f"[**همراه اول | ایرانسل | وایفای | اختصاصی**]({apk_url})\n"
+            f"[**همراه اول | ایرانسل | وایفای | اختصاصی**]({apk_url})"
+        )
+    else:
+        operator_lines = (
+            "**همراه اول | ایرانسل | وایفای | اختصاصی**\n"
+            "**همراه اول | ایرانسل | وایفای | اختصاصی**"
+        )
 
     body = [
-        "✦ *گزارش روزانهٔ ProxyStar*",
+        "✦ **گزارش روزانهٔ ProxyStar**",
         "",
-        f"*در حال حاضر {scanned:,} سرور بررسی شد و مجموع {scanned:,} سرور برتر برای شما در دسترس گرفت.*",
+        f"**در حال حاضر {scanned:,} سرور بررسی شد و مجموع {len(alive):,} سرور برتر برای شما در دسترس گرفت.**",
         "",
-        "*~ پروکسی‌های اختصاصی، متناسب با اپراتور و اینترنت منطقه‌ای شما :*",
-        f"[همراه اول | ایرانسل | وایفای | اختصاصی]({apk_url})",
-        f"[همراه اول | ایرانسل | وایفای | اختصاصی]({apk_url})",
+        "**~ پروکسی‌های اختصاصی، متناسب با اپراتور و اینترنت منطقه‌ای شما :**",
+        operator_lines,
         "",
         "@Proxystar_Channel",
     ]
@@ -340,6 +361,27 @@ def cmd_make_post(_):
     POST_FILE.write_text(text, encoding="utf-8")
     print(text)
     print(f"\n---- saved: {POST_FILE} ----")
+
+
+def tg_api_call(token: str, method: str, fields: dict, photo_bytes: bytes = None) -> dict:
+    """Send via multipart if photo_bytes given, else urlencoded. Returns full Telegram response."""
+    api = f"https://api.telegram.org/bot{token}/{method}"
+    if photo_bytes is None:
+        data = urllib.parse.urlencode(fields).encode()
+        req = urllib.request.Request(api, data=data)
+    else:
+        boundary = uuid.uuid4().hex
+        buf = b""
+        for k, v in fields.items():
+            buf += (f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n').encode()
+        buf += (f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="banner.png"\r\n'
+                f"Content-Type: image/png\r\n\r\n").encode() + photo_bytes + b"\r\n"
+        buf += f"--{boundary}--\r\n".encode()
+        req = urllib.request.Request(api, data=buf, headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}"})
+
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode())
 
 
 def cmd_send_post(_):
@@ -351,34 +393,34 @@ def cmd_send_post(_):
         sys.exit("TG_BOT_TOKEN / TG_CHANNEL_ID not set")
 
     cfg = load_channel()
-    banner_url = cfg.get("banner_url", "")
+    banner_url = cfg.get("banner_url", "").strip()
     text = POST_FILE.read_text(encoding="utf-8")
 
+    photo_bytes = None
     if banner_url:
-        data = urllib.parse.urlencode({
-            "chat_id": channel,
-            "photo": banner_url,
-            "caption": text,
-            "parse_mode": "Markdown",
-        }).encode()
-        api = f"https://api.telegram.org/bot{token}/sendPhoto"
-    else:
-        data = urllib.parse.urlencode({
-            "chat_id": channel,
-            "text": text,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": "true",
-        }).encode()
-        api = f"https://api.telegram.org/bot{token}/sendMessage"
+        try:
+            photo_bytes = fetch_bytes(banner_url)
+            print(f"banner downloaded: {len(photo_bytes)} bytes")
+        except Exception as e:
+            print(f"[WARN] banner download failed, sending text-only: {e}")
 
-    req = urllib.request.Request(api, data=data)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        resp = json.loads(r.read().decode())
+    if photo_bytes:
+        resp = tg_api_call(token, "sendPhoto",
+                           {"chat_id": channel, "caption": text, "parse_mode": "Markdown"},
+                           photo_bytes=photo_bytes)
         if resp.get("ok"):
-            print("posted")
-        else:
-            print(f"error: {resp}")
-            sys.exit(1)
+            print("posted (with banner)")
+            return
+        print(f"[WARN] sendPhoto failed: {resp} - falling back to text")
+
+    resp = tg_api_call(token, "sendMessage",
+                       {"chat_id": channel, "text": text,
+                        "parse_mode": "Markdown", "disable_web_page_preview": "true"})
+    if resp.get("ok"):
+        print("posted (text-only)")
+    else:
+        print(f"TELEGRAM ERROR: {resp}")
+        sys.exit(1)
 
 
 def cmd_run(args):
