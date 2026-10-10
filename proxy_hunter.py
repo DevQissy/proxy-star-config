@@ -351,12 +351,12 @@ def cmd_make_post(_):
     body = [
         "✦ **گزارش روزانهٔ ProxyStar**",
         "",
-        f"**در حال حاضر {scanned:,} سرور بررسی شد و مجموع {len(alive):,} سرور برتر برای شما در دسترس گرفت.**",
+        f"**هم اکنون {scanned:,} سرور بررسی شد و مجموع {len(alive):,} سرور برتر برای شما در دسترس گرفت.**",
         "",
         "**~ پروکسی‌های اختصاصی، متناسب با اپراتور و اینترنت منطقه‌ای شما :**",
         operator_lines,
         "",
-        "@Proxystar_Channel",
+        "\n@Proxystar_Channel",
     ]
     text = "\n".join(body)
     POST_FILE.write_text(text, encoding="utf-8")
